@@ -1,80 +1,152 @@
 # Adadelta
+:label:`sec_adadelta`
 
-In addition to RMSProp, Adadelta is another common optimization algorithm that helps improve the chances of finding useful solutions at later stages of iteration, which is difficult to do when using the Adagrad algorithm for the same purpose[1]. The interesting thing is that there is no learning rate hyperparameter in the Adadelta algorithm.
+Adadelta is yet another variant of AdaGrad (:numref:`sec_adagrad`). The main difference lies in the fact that it decreases the amount by which the learning rate is adaptive to coordinates. Moreover, traditionally it referred to as not having a learning rate since it uses the amount of change itself as calibration for future change. The algorithm was proposed in :cite:`Zeiler.2012`. It is fairly straightforward, given the discussion of previous algorithms so far. 
 
 ## The Algorithm
 
-Like RMSProp, the Adadelta algorithm uses the variable $\boldsymbol{s}_t$, which is an EWMA on the squares of elements in mini-batch stochastic gradient $\boldsymbol{g}_t$. At time step 0, all the elements are initialized to 0.
-Given the hyperparameter $0 \leq \rho < 1$ (counterpart of $\gamma$ in RMSProp), at time step $t>0$, compute using the same method as RMSProp:
+In a nutshell, Adadelta uses two state variables, $\mathbf{s}_t$ to store a leaky average of the second moment of the gradient and $\Delta\mathbf{x}_t$ to store a leaky average of the second moment of the change of parameters in the model itself. Note that we use the original notation and naming of the authors for compatibility with other publications and implementations (there is no other real reason why one should use different Greek variables to indicate a parameter serving the same purpose in momentum, Adagrad, RMSProp, and Adadelta). 
 
-$$\boldsymbol{s}_t \leftarrow \rho \boldsymbol{s}_{t-1} + (1 - \rho) \boldsymbol{g}_t \odot \boldsymbol{g}_t. $$
+Here are the technical details of Adadelta. Given the parameter du jour is $\rho$, we obtain the following leaky updates similarly to :numref:`sec_rmsprop`:
 
-Unlike RMSProp, Adadelta maintains an additional state variable, $\Delta\boldsymbol{x}_t$ the elements of which are also initialized to 0 at time step 0. We use $\Delta\boldsymbol{x}_{t-1}$ to compute the variation of the independent variable:
+$$\begin{aligned}
+    \mathbf{s}_t & = \rho \mathbf{s}_{t-1} + (1 - \rho) \mathbf{g}_t^2.
+\end{aligned}$$
 
-$$ \boldsymbol{g}_t' \leftarrow \sqrt{\frac{\Delta\boldsymbol{x}_{t-1} + \epsilon}{\boldsymbol{s}_t + \epsilon}}   \odot \boldsymbol{g}_t, $$
+The difference to :numref:`sec_rmsprop` is that we perform updates with the rescaled gradient $\mathbf{g}_t'$, i.e.,
 
-Here, $\epsilon$ is a constant added to maintain the numerical stability, such as $10^{-5}$. Next, we update the independent variable:
+$$\begin{aligned}
+    \mathbf{x}_t  & = \mathbf{x}_{t-1} - \mathbf{g}_t'. \\
+\end{aligned}$$
 
-$$\boldsymbol{x}_t \leftarrow \boldsymbol{x}_{t-1} - \boldsymbol{g}'_t. $$
+So what is the rescaled gradient $\mathbf{g}_t'$? We can calculate it as follows:
 
-Finally, we use $\Delta\boldsymbol{x}$ to record the EWMA on the squares of elements in $\boldsymbol{g}'$, which is the variation of the independent variable.
+$$\begin{aligned}
+    \mathbf{g}_t' & = \frac{\sqrt{\Delta\mathbf{x}_{t-1} + \epsilon}}{\sqrt{{\mathbf{s}_t + \epsilon}}} \odot \mathbf{g}_t, \\
+\end{aligned}$$
 
-$$\Delta\boldsymbol{x}_t \leftarrow \rho \Delta\boldsymbol{x}_{t-1} + (1 - \rho) \boldsymbol{g}'_t \odot \boldsymbol{g}'_t. $$
+where $\Delta \mathbf{x}_{t-1}$ is the leaky average of the squared rescaled gradients $\mathbf{g}_t'$. We initialize $\Delta \mathbf{x}_{0}$ to be $0$ and update it at each step with $\mathbf{g}_t'$, i.e.,
 
-As we can see, if the impact of $\epsilon$ is not considered here, Adadelta differs from RMSProp in its replacement of the hyperparameter $\eta$ with $\sqrt{\Delta\boldsymbol{x}_{t-1}}$.
+$$\begin{aligned}
+    \Delta \mathbf{x}_t & = \rho \Delta\mathbf{x}_{t-1} + (1 - \rho) {\mathbf{g}_t'}^2,
+\end{aligned}$$
+
+and $\epsilon$ (a small value such as $10^{-5}$) is added to maintain numerical stability.
 
 
-## Implementation from Scratch
 
-Adadelta needs to maintain two state variables for each independent variable, $\boldsymbol{s}_t$ and $\Delta\boldsymbol{x}_t$. We use the formula from the algorithm to implement Adadelta.
+## Implementation
 
-```{.python .input  n=11}
+Adadelta needs to maintain two state variables for each variable, $\mathbf{s}_t$ and $\Delta\mathbf{x}_t$. This yields the following implementation.
+
+```{.python .input}
 %matplotlib inline
-import gluonbook as gb
-from mxnet import nd
+from d2l import mxnet as d2l
+from mxnet import np, npx
+npx.set_np()
 
-features, labels = gb.get_data_ch7()
-
-def init_adadelta_states():
-    s_w, s_b = nd.zeros((features.shape[1], 1)), nd.zeros(1)
-    delta_w, delta_b = nd.zeros((features.shape[1], 1)), nd.zeros(1)
+def init_adadelta_states(feature_dim):
+    s_w, s_b = d2l.zeros((feature_dim, 1)), d2l.zeros(1)
+    delta_w, delta_b = d2l.zeros((feature_dim, 1)), d2l.zeros(1)
     return ((s_w, delta_w), (s_b, delta_b))
 
 def adadelta(params, states, hyperparams):
     rho, eps = hyperparams['rho'], 1e-5
     for p, (s, delta) in zip(params, states):
-        s[:] = rho * s + (1 - rho) * p.grad.square()
-        g = ((delta + eps).sqrt() / (s + eps).sqrt()) * p.grad
+        # In-place updates via [:]
+        s[:] = rho * s + (1 - rho) * np.square(p.grad)
+        g = (np.sqrt(delta + eps) / np.sqrt(s + eps)) * p.grad
         p[:] -= g
         delta[:] = rho * delta + (1 - rho) * g * g
 ```
 
-Then, we train the model with the hyperparameter $\rho=0.9$.
+```{.python .input}
+#@tab pytorch
+%matplotlib inline
+from d2l import torch as d2l
+import torch
 
-```{.python .input  n=12}
-gb.train_ch7(adadelta, init_adadelta_states(), {'rho': 0.9}, features, labels)
+def init_adadelta_states(feature_dim):
+    s_w, s_b = d2l.zeros((feature_dim, 1)), d2l.zeros(1)
+    delta_w, delta_b = d2l.zeros((feature_dim, 1)), d2l.zeros(1)
+    return ((s_w, delta_w), (s_b, delta_b))
+
+def adadelta(params, states, hyperparams):
+    rho, eps = hyperparams['rho'], 1e-5
+    for p, (s, delta) in zip(params, states):
+        with torch.no_grad():
+            # In-place updates via [:]
+            s[:] = rho * s + (1 - rho) * torch.square(p.grad)
+            g = (torch.sqrt(delta + eps) / torch.sqrt(s + eps)) * p.grad
+            p[:] -= g
+            delta[:] = rho * delta + (1 - rho) * g * g
+        p.grad.data.zero_()
 ```
 
-## Implementation with Gluon
+```{.python .input}
+#@tab tensorflow
+%matplotlib inline
+from d2l import tensorflow as d2l
+import tensorflow as tf
 
-From the `Trainer` instance for the algorithm named "adadelta", we can implement Adadelta in Gluon. Its hyperparameters can be specified by `rho`.
+def init_adadelta_states(feature_dim):
+    s_w = tf.Variable(d2l.zeros((feature_dim, 1)))
+    s_b = tf.Variable(d2l.zeros(1))
+    delta_w = tf.Variable(d2l.zeros((feature_dim, 1)))
+    delta_b = tf.Variable(d2l.zeros(1))
+    return ((s_w, delta_w), (s_b, delta_b))
 
-```{.python .input  n=9}
-gb.train_gluon_ch7('adadelta', {'rho': 0.9}, features, labels)
+def adadelta(params, grads, states, hyperparams):
+    rho, eps = hyperparams['rho'], 1e-5
+    for p, (s, delta), grad in zip(params, states, grads):
+        s[:].assign(rho * s + (1 - rho) * tf.math.square(grad))
+        g = (tf.math.sqrt(delta + eps) / tf.math.sqrt(s + eps)) * grad
+        p[:].assign(p - g)
+        delta[:].assign(rho * delta + (1 - rho) * g * g)
+```
+
+Choosing $\rho = 0.9$ amounts to a half-life time of 10 for each parameter update. This tends to work quite well. We get the following behavior.
+
+```{.python .input}
+#@tab all
+data_iter, feature_dim = d2l.get_data_ch11(batch_size=10)
+d2l.train_ch11(adadelta, init_adadelta_states(feature_dim),
+               {'rho': 0.9}, data_iter, feature_dim);
+```
+
+For a concise implementation we simply use the `adadelta` algorithm from the `Trainer` class. This yields the following one-liner for a much more compact invocation.
+
+```{.python .input}
+d2l.train_concise_ch11('adadelta', {'rho': 0.9}, data_iter)
+```
+
+```{.python .input}
+#@tab pytorch
+trainer = torch.optim.Adadelta
+d2l.train_concise_ch11(trainer, {'rho': 0.9}, data_iter)
+```
+
+```{.python .input}
+#@tab tensorflow
+# adadelta is not converging at default learning rate
+# but it's converging at lr = 5.0
+trainer = tf.keras.optimizers.Adadelta
+d2l.train_concise_ch11(trainer, {'learning_rate':5.0, 'rho': 0.9}, data_iter)
 ```
 
 ## Summary
 
-* Adadelta has no learning rate hyperparameter, it uses an EWMA on the squares of elements in the variation of the independent variable to replace the learning rate.
+* Adadelta has no learning rate parameter. Instead, it uses the rate of change in the parameters itself to adapt the learning rate. 
+* Adadelta requires two state variables to store the second moments of gradient and the change in parameters. 
+* Adadelta uses leaky averages to keep a running estimate of the appropriate statistics. 
 
-## exercise
+## Exercises
 
-* Adjust the value of $\rho$ and observe the experimental results.
+1. Adjust the value of $\rho$. What happens?
+1. Show how to implement the algorithm without the use of $\mathbf{g}_t'$. Why might this be a good idea?
+1. Is Adadelta really learning rate free? Could you find optimization problems that break Adadelta?
+1. Compare Adadelta to Adagrad and RMS prop to discuss their convergence behavior.
 
-## Reference
-
-[1] Zeiler, M. D. (2012). ADADELTA: an adaptive learning rate method. arXiv preprint arXiv:1212.5701.
-
-## Discuss on our Forum
-
-<div id="discuss" topic_id="2377"></div>
+:begin_tab:`mxnet`
+[Discussions](https://discuss.d2l.ai/t/357)
+:end_tab:
